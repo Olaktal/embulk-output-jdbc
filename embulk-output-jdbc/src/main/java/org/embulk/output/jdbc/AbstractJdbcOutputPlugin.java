@@ -84,6 +84,10 @@ public abstract class AbstractJdbcOutputPlugin
         @ConfigDefault("null")
         public Optional<List<String>> getMergeKeys();
 
+        @Config("update_keys")
+        @ConfigDefault("null")
+        public Optional<List<String>> getUpdateKeys();
+
         @Config("column_options")
         @ConfigDefault("{}")
         public Map<String, JdbcColumnOption> getColumnOptions();
@@ -107,6 +111,10 @@ public abstract class AbstractJdbcOutputPlugin
         @Config("merge_rule")
         @ConfigDefault("null")
         public Optional<List<String>> getMergeRule();
+
+        @Config("where")
+        @ConfigDefault("null")
+        public Optional<String> getWhere();
 
         public void setActualTable(String actualTable);
         public String getActualTable();
@@ -152,6 +160,7 @@ public abstract class AbstractJdbcOutputPlugin
         private LengthSemantics tableNameLengthSemantics = LengthSemantics.BYTES;
         private Set<Mode> supportedModes = ImmutableSet.copyOf(Mode.values());
         private boolean ignoreMergeKeys = false;
+        private boolean ignoreUpdateKeys = false;
 
         public Features()
         { }
@@ -200,10 +209,23 @@ public abstract class AbstractJdbcOutputPlugin
             return ignoreMergeKeys;
         }
 
-        @JsonProperty
+        @JsonPropertysetIgnoreMergeKeys
         public Features setIgnoreMergeKeys(boolean value)
         {
             this.ignoreMergeKeys = value;
+            return this;
+        }
+
+        @JsonProperty
+        public boolean getIgnoreUpdateKeys()
+        {
+            return ignoreUpdateKeys;
+        }
+
+        @JsonPropertysetIgnoreUpdateKeys
+        public Features setIgnoreUpdateKeys(boolean value)
+        {
+            this.ignoreUpdateKeys = value;
             return this;
         }
     }
@@ -230,7 +252,7 @@ public abstract class AbstractJdbcOutputPlugin
 
     protected abstract JdbcOutputConnector getConnector(PluginTask task, boolean retryableMetadataOperation);
 
-    protected abstract BatchInsert newBatchInsert(PluginTask task, Optional<MergeConfig> mergeConfig) throws IOException, SQLException;
+    protected abstract BatchInsert newBatchInsert(PluginTask task, Optional<MergeConfig> mergeConfig, Optional<UpdateConfig> updateConfig) throws IOException, SQLException;
 
     protected JdbcOutputConnection newConnection(PluginTask task, boolean retryableMetadataOperation,
             boolean autoCommit) throws SQLException
@@ -244,7 +266,8 @@ public abstract class AbstractJdbcOutputPlugin
         MERGE,
         MERGE_DIRECT,
         TRUNCATE_INSERT,
-        REPLACE;
+        REPLACE,
+        UPDATE;
 
         @JsonValue
         @Override
@@ -269,8 +292,10 @@ public abstract class AbstractJdbcOutputPlugin
                 return TRUNCATE_INSERT;
             case "replace":
                 return REPLACE;
+            case "update":
+                return UPDATE;
             default:
-                throw new ConfigException(String.format("Unknown mode '%s'. Supported modes are insert, insert_direct, merge, merge_direct, truncate_insert, replace", value));
+                throw new ConfigException(String.format("Unknown mode '%s'. Supported modes are insert, insert_direct, merge, merge_direct, truncate_insert, replace, update", value));
             }
         }
 
@@ -291,11 +316,19 @@ public abstract class AbstractJdbcOutputPlugin
         }
 
         /**
+         * True if this mode merges records on unique keys
+         */
+        public boolean isUpdate()
+        {
+            return this == UPDATE;
+        }
+
+        /**
          * True if this mode creates intermediate table for each tasks.
          */
         public boolean tempTablePerTask()
         {
-            return this == INSERT || this == MERGE || this == TRUNCATE_INSERT /*this == REPLACE_VIEW*/;
+            return this == INSERT || this == MERGE || this == TRUNCATE_INSERT || this == UPDATE /*this == REPLACE_VIEW*/;
         }
 
         /**
@@ -313,6 +346,15 @@ public abstract class AbstractJdbcOutputPlugin
         {
             return this == MERGE;
         }
+
+        /**
+         * True if this mode uses UPDATE statement to commit intermediate tables to the target table
+         */
+        public boolean commitByUpdate()
+        {
+            return this == UPDATE;
+        }
+
 
         /**
          * True if this mode overwrites schema of the target tables
@@ -569,6 +611,40 @@ public abstract class AbstractJdbcOutputPlugin
         } else {
             task.setMergeKeys(Optional.<List<String>>absent());
         }
+
+        // normalize update_key parameter for update modes
+        if (mode.isUpdate()) {
+            Optional<List<String>> updateKeys = task.getUpdateKeys();
+            if (task.getFeatures().getIgnoreUpdateKeys()) {
+                if (updateKeys.isPresent()) {
+                    throw new ConfigException("This output type does not accept 'update_key' option.");
+                }
+                task.setUpdateKeys(Optional.<List<String>>of(ImmutableList.<String>of()));
+            } else if (updateKeys.isPresent()) {
+                if (task.getUpdateKeys().get().isEmpty()) {
+                    throw new ConfigException("Empty 'update_keys' option is invalid.");
+                }
+                for (String key : updateKeys.get()) {
+                    if (!targetTableSchema.findColumn(key).isPresent()) {
+                        throw new ConfigException(String.format("Update key '%s' does not exist in the target table.", key));
+                    }
+                }
+            } else {
+                ImmutableList.Builder<String> builder = ImmutableList.builder();
+                for (JdbcColumn column : targetTableSchema.getColumns()) {
+                    if (column.isUniqueKey()) {
+                        builder.add(column.getName());
+                    }
+                }
+                task.setUpdateKeys(Optional.<List<String>>of(builder.build()));
+                if (task.getUpdateKeys().get().isEmpty()) {
+                    throw new ConfigException("Update mode is used but the target table does not have primary keys. Please set update_keys option.");
+                }
+            }
+            logger.info("Using update keys: {}", task.getUpdateKeys().get());
+        } else {
+            task.setUpdateKeys(Optional.<List<String>>absent());
+        }
     }
 
     protected ColumnSetterFactory newColumnSetterFactory(BatchInsert batch, DateTimeZone defaultTimeZone)
@@ -701,7 +777,15 @@ public abstract class AbstractJdbcOutputPlugin
             }
             con.collectMerge(task.getIntermediateTables().get(), schema, task.getActualTable(), new MergeConfig(task.getMergeKeys().get(), task.getMergeRule()));
             break;
+        case UPDATE:
+            // aggregate update into target
+            if (task.getNewTableSchema().isPresent()) {
+                con.createTableIfNotExists(task.getActualTable(), task.getNewTableSchema().get());
+            }
+            con.collectUpdate(task.getIntermediateTables().get(), schema, task.getActualTable(), new UpdateConfig(task.getUpdateKeys().get()));
+        break;
 
+        
         case REPLACE:
             // swap table
             con.replaceTable(task.getIntermediateTables().get().get(0), schema, task.getActualTable());
@@ -846,11 +930,14 @@ public abstract class AbstractJdbcOutputPlugin
         // instantiate BatchInsert without table name
         BatchInsert batch = null;
         try {
-            Optional<MergeConfig> config = Optional.absent();
+            Optional<MergeConfig> configMerge = Optional.absent();
+            Optional<UpdateConfig> configUpdate = Optional.absent();
             if (task.getMode() == Mode.MERGE_DIRECT) {
-                config = Optional.of(new MergeConfig(task.getMergeKeys().get(), task.getMergeRule()));
+                configMerge = Optional.of(new MergeConfig(task.getMergeKeys().get(), task.getMergeRule()));
+            } else if (task.getMode() == Mode.UPDATE_DIRECT) {
+                configUpdate = Optional.of(new UpdateConfig(task.getUpdateKeys().get()));
             }
-            batch = newBatchInsert(task, config);
+            batch = newBatchInsert(task, configMerge,configUpdate);
         } catch (IOException | SQLException ex) {
             throw new RuntimeException(ex);
         }

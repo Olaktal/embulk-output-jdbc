@@ -7,6 +7,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 
 import org.embulk.output.jdbc.MergeConfig;
+import org.embulk.output.jdbc.UpdateConfig;
 import org.slf4j.Logger;
 import org.embulk.spi.Exec;
 import org.embulk.output.jdbc.JdbcOutputConnection;
@@ -214,6 +215,21 @@ public class RedshiftOutputConnection
 
         return sb.toString();
 
+    }
+
+}
+
+    @Override
+    protected String buildCollectUpdateSql(List<String> fromTables, JdbcSchema schema, String toTable, UpdateConfig updateConfig) throws SQLException
+    {
+        StringBuilder sb = new StringBuilder();
+
+        List<String> updateKeys = updateConfig.getUpdateKeys();
+
+        sb.append("BEGIN TRANSACTION;");
+        sb.append("UPDATE dim_platform SET is_active = 0;");
+        sb.append("END TRANSACTION;");
+        return sb.toString();
     }
 
 }

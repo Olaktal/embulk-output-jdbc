@@ -58,7 +58,7 @@ public class JdbcOutputPlugin
         GenericPluginTask t = (GenericPluginTask) task;
         return new Features()
             .setMaxTableNameLength(t.getMaxTableNameLength())
-            .setSupportedModes(ImmutableSet.of(Mode.INSERT, Mode.INSERT_DIRECT, Mode.TRUNCATE_INSERT, Mode.REPLACE));
+            .setSupportedModes(ImmutableSet.of(Mode.INSERT, Mode.INSERT_DIRECT, Mode.TRUNCATE_INSERT, Mode.REPLACE, Mode.UPDATE));
     }
 
     @Override
@@ -127,8 +127,8 @@ public class JdbcOutputPlugin
     }
 
     @Override
-    protected BatchInsert newBatchInsert(PluginTask task, Optional<MergeConfig> mergeConfig) throws IOException, SQLException
+    protected BatchInsert newBatchInsert(PluginTask task, Optional<MergeConfig> mergeConfig, Optional<UpdateConfig> updateConfig) throws IOException, SQLException
     {
-        return new StandardBatchInsert(getConnector(task, true), mergeConfig);
+        return new StandardBatchInsert(getConnector(task, true), mergeConfig, updateConfig);
     }
 }

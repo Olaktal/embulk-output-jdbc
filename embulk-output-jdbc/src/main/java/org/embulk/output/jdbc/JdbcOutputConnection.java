@@ -241,10 +241,12 @@ public class JdbcOutputConnection
         return ColumnDeclareType.SIMPLE;
     }
 
-    public PreparedStatement prepareBatchInsertStatement(String toTable, JdbcSchema toTableSchema, Optional<MergeConfig> mergeConfig) throws SQLException
+    public PreparedStatement prepareBatchInsertStatement(String toTable, JdbcSchema toTableSchema, Optional<MergeConfig> mergeConfig, Optional<UpdateConfig> updateConfig) throws SQLException
     {
         String sql;
-        if (mergeConfig.isPresent()) {
+        if (updateConfig.isPresent()){
+            sql = buildPreparedUpdateSql(toTable, toTableSchema, updateConfig.get());
+        } else if (mergeConfig.isPresent()) {
             sql = buildPreparedMergeSql(toTable, toTableSchema, mergeConfig.get());
         } else {
             sql = buildPreparedInsertSql(toTable, toTableSchema);
@@ -276,6 +278,11 @@ public class JdbcOutputConnection
     }
 
     protected String buildPreparedMergeSql(String toTable, JdbcSchema toTableSchema, MergeConfig mergeConfig) throws SQLException
+    {
+        throw new UnsupportedOperationException("not implemented");
+    }
+
+    protected String buildPreparedUpdateSql(String toTable, JdbcSchema toTableSchema, UpdateConfig updateConfig) throws SQLException
     {
         throw new UnsupportedOperationException("not implemented");
     }
@@ -348,8 +355,27 @@ public class JdbcOutputConnection
             stmt.close();
         }
     }
+    
+    protected void collectUpdate(List<String> fromTables, JdbcSchema schema, String toTable, UpdateConfig updateConfig) throws SQLException
+    {
+        Statement stmt = connection.createStatement();
+        try {
+            String sql = buildCollectUpdateSql(fromTables, schema, toTable, updateConfig);
+            executeUpdate(stmt, sql);
+            commitIfNecessary(connection);
+        } catch (SQLException ex) {
+            throw safeRollback(connection, ex);
+        } finally {
+            stmt.close();
+        }
+    }
 
     protected String buildCollectMergeSql(List<String> fromTables, JdbcSchema schema, String toTable, MergeConfig mergeConfig) throws SQLException
+    {
+        throw new UnsupportedOperationException("not implemented");
+    }
+
+    protected String buildCollectUpdateSql(List<String> fromTables, JdbcSchema schema, String toTable, UpdateConfig updateConfig) throws SQLException
     {
         throw new UnsupportedOperationException("not implemented");
     }

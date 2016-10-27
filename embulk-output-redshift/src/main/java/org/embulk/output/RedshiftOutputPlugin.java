@@ -158,4 +158,15 @@ public class RedshiftOutputPlugin
         return new RedshiftCopyBatchInsert(getConnector(task, true),
                 getAWSCredentialsProvider(t), t.getS3Bucket(), t.getS3KeyPrefix(), t.getIamUserName());
     }
+
+    @Override
+    protected BatchInsert newBatchInsert(PluginTask task, Optional<UpdateConfig> updateConfig) throws IOException, SQLException
+    {
+        if (updateConfig.isPresent()) {
+            throw new UnsupportedOperationException("Redshift output plugin doesn't support 'update_direct' mode. Use 'update' mode instead.");
+        }
+        RedshiftPluginTask t = (RedshiftPluginTask) task;
+        return new RedshiftCopyBatchInsert(getConnector(task, true),
+                getAWSCredentialsProvider(t), t.getS3Bucket(), t.getS3KeyPrefix(), t.getIamUserName());
+    }
 }
